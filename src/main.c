@@ -10,11 +10,18 @@
 #include<sys/socket.h>
 #include <sys/types.h>
 
+// fork
+#include <sys/types.h>
+#include <unistd.h>
+
+
 #include <arpa/inet.h>
 #include <netpacket/packet.h>
 #include <net/if.h>
 
 #include <strings.h>
+#include <unistd.h>
+#include <string.h>
 #include <sys/ioctl.h>
 
 #include <linux/sockios.h>
@@ -24,126 +31,16 @@
 #include <netinet/ip6.h> // struct ip6_hdr
 #include <netinet/udp.h> // struct udphdr *udp;
 
-#define IP_HDR_LEN      (ip->ihl * 4)
-#define IP6_HDR_LEN     (sizeof(struct ip6_hdr))
-#ifndef ETHERTYPE_IPV6
-#define ETHERTYPE_IPV6 0x86dd
-#endif
-
-struct ip6_pseudo_hdr {
-    struct in6_addr src;
-    struct in6_addr dst;
-    uint16_t len;
-    uint16_t nh;
-};
+#include "iputils.h"
+#include "udputils.h"
+#include "ethutils.h"
+#include "dnsutils.h"
 
 /*
  *
  */
-void gen_random(char *s, const int len) {
-    int i;
-    static const char alphanum[] =
-            "0123456789"
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-            "abcdefghijklmnopqrstuvwxyz";
-
-    for (i = 0; i < len; ++i) {
-        s[i] = alphanum[rand() % (sizeof (alphanum) - 1)];
-    }
-
-    s[len] = 0;
-}
-
-unsigned short int inet_cksum(unsigned short int *addr, size_t len, int init) {
-    register int nleft = (int) len;
-    register unsigned short int *w = addr;
-    unsigned short int answer = 0;
-    register int sum = init;
-
-    /*
-     *  Our algorithm is simple, using a 32 bit accumulator (sum),
-     *  we add sequential 16 bit words to it, and at the end, fold
-     *  back all the carry bits from the top 16 bits into the lower
-     *  16 bits.
-     */
-    while (nleft > 1) {
-        sum += *w++;
-        nleft -= 2;
-    }
-
-    /* mop up an odd byte, if necessary */
-    if (nleft == 1) {
-        *(u_char *) (&answer) = *(u_char *) w;
-        sum += answer;
-    }
-
-    /*
-     * add back carry outs from top 16 bits to low 16 bits
-     */
-    sum = (sum >> 16) + (sum & 0xffff); /* add hi 16 to low 16 */
-    sum += (sum >> 16); /* add carry */
-    answer = ~sum; /* truncate to 16 bits */
-    return (answer);
-}
-
-void phex(unsigned char *p, int len) {
-    int i = 0;
-    while (len--) {
-        printf("%.2X ", *p);
-        p++;
-
-        if (!((++i) % 16)) {
-            printf("\n");
-        }
-    }
-    if ((i % 16)) {
-        printf("\n");
-    }
-
-}
-
-void inverse_ip(struct iphdr *i) {
-    uint32_t t;
-
-    t = i->daddr;
-    i->daddr = i->saddr;
-    i->saddr = t;
-}
-
-void inverse_ip6(struct ip6_hdr *ip6) {
-    struct ip6_hdr t;
-
-    memcpy(&t, ip6, sizeof (struct ip6_hdr));
-    memcpy(&(ip6->ip6_src), &(t.ip6_dst), sizeof (struct in6_addr));
-    memcpy(&(ip6->ip6_dst), &(t.ip6_src), sizeof (struct in6_addr));
-}
-
-void inverse_eth(struct ether_header *e) {
-    struct ether_header t;
 
 
-    memcpy(&t, e, sizeof (struct ether_header));
-
-    memcpy(e->ether_shost, t.ether_dhost, sizeof (t.ether_dhost));
-    memcpy(e->ether_dhost, t.ether_shost, sizeof (t.ether_dhost));
-    e->ether_dhost[0] = 0x00;
-    e->ether_dhost[1] = 0x00;
-    e->ether_dhost[2] = 0x5E;
-    e->ether_dhost[3] = 0x00;
-    e->ether_dhost[4] = 0x01;
-    e->ether_dhost[5] = 0x04;
-
-}
-
-void inverse_udp(struct udphdr *u) {
-    int src;
-    int len, sll_size;
-
-
-    src = u->source;
-    u->source = u->dest;
-    u->dest = src;
-}
 
 
 
@@ -183,13 +80,14 @@ void read_from(int rawsock) {
             dns = (((void *) udp) + sizeof (struct udphdr));
 
             inverse_udp(udp);
+            
             udp->check = 0;
             dns[2] = dns[2] | 0x80;
             dns[3] = 0x80;
             extra_data_len = rand()%0xff;
-            packet_buffer[2] = 0x81;
-            packet_buffer[3] = 0x83;
-            packet_buffer[11] = 0x01;
+            dns[2] = 0x81;
+            dns[3] = 0x83;
+            dns[11] = 0x01;
             packet_buffer[len] = 0xC0;
             packet_buffer[len+1] = 0x0C;
             packet_buffer[len+2] = 0x00;
@@ -201,12 +99,12 @@ void read_from(int rawsock) {
             packet_buffer[len+8] = 0x00;
             packet_buffer[len+9] = 0xc1;
             packet_buffer[len+10] = 0x00;
-            packet_buffer[len+11] = 1+(extra_data_len)&0xff;
+            packet_buffer[len+11] = 1+((extra_data_len)&0xff);
             packet_buffer[len+12] = (extra_data_len)&0xff;
             gen_random(&(packet_buffer[len+13]), extra_data_len);
             
-            //udp->len = htons(ntohs(udp->len)+12+extra_data_len);
-            extra_data_len = 0;
+            udp->len = htons(ntohs(udp->len)+12+extra_data_len);
+            //extra_data_len = 0;
             if (family == ETHERTYPE_IP) {
                 inverse_ip(ip);
                 udp->check = 0;
@@ -218,8 +116,8 @@ void read_from(int rawsock) {
                 ps_hdr.len = udp->len;
                 ps_hdr.nh = ntohs(17);
 
-                ck = inet_cksum(&ps_hdr, sizeof (ps_hdr), 0);
-                udp->check = inet_cksum(udp, ntohs(udp->len), (~ck)&0xffff);
+                ck = inet_cksum((unsigned short *)&ps_hdr, sizeof (ps_hdr), 0);
+                udp->check = inet_cksum((unsigned short *)udp, ntohs(udp->len), (~ck)&0xffff);
             }
             inverse_eth(eth);
 
